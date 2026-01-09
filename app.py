@@ -8,93 +8,91 @@ st.title("Diet Meal Planning Optimisation using Evolutionary Programming")
 # Load dataset
 data = pd.read_csv("Food_and_Nutrition__.csv")
 
-st.subheader("Food and Nutrition Dataset")
+# Add Price column (random reasonable prices for example)
+np.random.seed(42)
+data['Price'] = np.random.randint(2, 10, size=len(data))  # $2-$9 per meal
+
+st.subheader("Food and Nutrition Dataset with Price")
 st.dataframe(data)
 
-# --- EP PARAMETERS ---
+# Step 1: User inputs nutrition targets
+st.subheader("Set Daily Nutrition Targets")
+cal_target = st.number_input("Calories", value=2000, min_value=1000, max_value=5000)
+protein_target = st.number_input("Protein (g)", value=75, min_value=10, max_value=300)
+fat_target = st.number_input("Fat (g)", value=70, min_value=10, max_value=200)
+
+# Step 2: Evolutionary Programming parameters
 POP_SIZE = 50
 GENERATIONS = 100
-MUTATION_RATE = 0.1
+MUTATION_RATE = 0.2
 
-# Nutritional targets
-TARGET_CALORIES = 2000
-TARGET_PROTEIN = 50
-TARGET_FAT = 70
-
-# Fitness function: how well a meal plan meets nutrition while minimizing cost
+# Helper function: fitness = how well a meal plan meets targets while minimizing price
 def fitness(plan):
-    total_calories = np.sum(plan * data['Calories'].values)
-    total_protein = np.sum(plan * data['Protein'].values)
-    total_fat = np.sum(plan * data['Fat'].values)
+    total_cal = np.sum(plan * data['Calories'].values)
+    total_protein = np.sum(plan * data['Protein (g)'].values)
+    total_fat = np.sum(plan * data['Fat (g)'].values)
     total_price = np.sum(plan * data['Price'].values)
-    
-    # Penalize deviation from targets
-    calorie_penalty = abs(TARGET_CALORIES - total_calories)
-    protein_penalty = abs(TARGET_PROTEIN - total_protein)
-    fat_penalty = abs(TARGET_FAT - total_fat)
-    
-    return calorie_penalty + protein_penalty + fat_penalty + total_price
 
-# --- EP ALGORITHM ---
+    # Penalty if constraints not met
+    penalty = 0
+    if total_cal < cal_target:
+        penalty += (cal_target - total_cal) * 2
+    if total_protein < protein_target:
+        penalty += (protein_target - total_protein) * 5
+    if total_fat < fat_target:
+        penalty += (fat_target - total_fat) * 3
+
+    return total_price + penalty  # lower fitness is better
+
+# Initialize population (binary: include meal or not)
+def init_population():
+    return np.random.randint(0, 2, size=(POP_SIZE, len(data)))
+
+# Evolutionary Programming main loop
 def ep_optimizer():
-    num_foods = len(data)
-    
-    # Initialize population with random meal counts (0 or 1)
-    pop = np.random.randint(0, 2, size=(POP_SIZE, num_foods))
-    fitness_history = []
+    pop = init_population()
+    best_fitness_list = []
 
     for gen in range(GENERATIONS):
         fitness_values = np.array([fitness(ind) for ind in pop])
-        fitness_history.append(np.min(fitness_values))
-        
-        # Selection: top 50% survive
-        top_idx = fitness_values.argsort()[:POP_SIZE//2]
-        top_pop = pop[top_idx]
-        
-        # Mutation to refill population
+        best_fitness_list.append(fitness_values.min())
+
+        # Selection: keep best half
+        idx = np.argsort(fitness_values)
+        pop = pop[idx[:POP_SIZE//2]]
+
+        # Mutation: duplicate + mutate
         new_pop = []
-        while len(new_pop) < POP_SIZE:
-            parent = top_pop[np.random.randint(len(top_pop))].copy()
-            # Mutate each gene with MUTATION_RATE
-            for i in range(num_foods):
+        for ind in pop:
+            child = ind.copy()
+            for i in range(len(child)):
                 if np.random.rand() < MUTATION_RATE:
-                    parent[i] = 1 - parent[i]  # flip 0 ↔ 1
-            new_pop.append(parent)
-        
-        pop = np.array(new_pop)
-    
-    # Return best plan
-    fitness_values = np.array([fitness(ind) for ind in pop])
-    best_idx = np.argmin(fitness_values)
-    return pop[best_idx], fitness_history
+                    child[i] = 1 - child[i]  # flip 0/1
+            new_pop.append(child)
+        pop = np.vstack([pop, new_pop])  # new generation
 
-# --- RUN OPTIMIZER ---
-if st.button("Run Evolutionary Programming Optimizer"):
+    # Return best individual
+    final_fitness = np.array([fitness(ind) for ind in pop])
+    best_idx = final_fitness.argmin()
+    return pop[best_idx], best_fitness_list
+
+# Step 3: Run optimizer
+if st.button("Run Evolutionary Programming"):
     best_plan, fitness_history = ep_optimizer()
-    
-    st.subheader("Recommended Meals")
-    selected_meals = data[best_plan == 1]
-    if len(selected_meals) == 0:
-        st.write("No meals selected. Try running again.")
-    else:
-        for idx, row in selected_meals.iterrows():
-            st.write(f"🍽 {row['Food']} - Calories: {row['Calories']}, Protein: {row['Protein']}, Fat: {row['Fat']}, Price: ${row['Price']:.2f}")
-        
-        total_calories = np.sum(selected_meals['Calories'])
-        total_protein = np.sum(selected_meals['Protein'])
-        total_fat = np.sum(selected_meals['Fat'])
-        total_price = np.sum(selected_meals['Price'])
-        
-        st.write(f"**Total Calories:** {total_calories}")
-        st.write(f"**Total Protein:** {total_protein}")
-        st.write(f"**Total Fat:** {total_fat}")
-        st.write(f"**Total Cost:** ${total_price:.2f}")
-    
-    # Plot convergence
-    st.subheader("Fitness Convergence Over Generations")
-    fig, ax = plt.subplots()
-    ax.plot(fitness_history)
-    ax.set_xlabel("Generation")
-    ax.set_ylabel("Fitness (Lower is Better)")
-    st.pyplot(fig)
 
+    # Show recommended meals
+    st.subheader("Recommended Daily Meal Plan")
+    recommended = data[best_plan==1].copy()
+    st.dataframe(recommended)
+
+    st.write("Total Calories:", recommended['Calories'].sum())
+    st.write("Total Protein (g):", recommended['Protein (g)'].sum())
+    st.write("Total Fat (g):", recommended['Fat (g)'].sum())
+    st.write("Total Price ($):", recommended['Price'].sum())
+
+    # Convergence plot
+    st.subheader("Convergence over Generations")
+    plt.plot(fitness_history)
+    plt.xlabel("Generation")
+    plt.ylabel("Best Fitness (Lower is Better)")
+    st.pyplot(plt)
