@@ -2,97 +2,105 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 
-st.set_page_config(page_title="Final Solution", layout="wide")
-st.title("🍱 Guaranteed Constraint Diet Optimizer")
+st.set_page_config(page_title="EP Diet Optimizer", layout="wide")
+st.title("🍱 Evolutionary Programming (EP) Diet Optimizer")
+st.write("Objective: Minimize RM Cost while keeping Calories strictly between 1200 - 3000.")
 
-if os.path.exists("Food_and_Nutrition__.csv"):
+# --- 1. DATA PREP ---
+@st.cache_data
+def load_data():
     df = pd.read_csv("Food_and_Nutrition__.csv")
-    df.columns = df.columns.str.strip() 
+    df.columns = df.columns.str.strip()
+    # Create price in RM
+    np.random.seed(42)
+    df['Price'] = (df['Calories'] * 0.005 + 2.50).round(2)
+    return df
+
+data = load_data()
+
+# --- 2. EP LOGIC ---
+def calculate_fitness(plan, target_c):
+    t_cal = sum(m['Calories'] for m in plan)
+    t_price = sum(m['Price'] for m in plan)
     
-    # Generate prices in RM
-    np.random.seed(99) # New seed
-    df['Price'] = (df['Calories'] * 0.005 + 2).round(2)
+    # --- THE HARD LIMIT ---
+    # If calories are over 3000, we give it a massive penalty so it LOSES.
+    penalty = 0
+    if t_cal > 3000 or t_cal < 1200:
+        penalty = 1000000 
+    
+    # Fitness = Price + Penalty + Distance from Target
+    # In EP, we want the LOWEST score.
+    return t_price + penalty + abs(t_cal - target_c)
 
-    # --- SIDEBAR ---
-    st.sidebar.header("🎯 STRICT TARGETS")
-    # I have lowered these defaults so the AI doesn't feel forced to "overeat"
-    target_cal = st.sidebar.slider("Calories Target", 1200, 2500, 1800)
-    min_prot = st.sidebar.slider("Min Protein (g)", 10, 100, 50)
+def run_ep_optimizer(target_c):
+    pools = [
+        data[['Breakfast Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
+        data[['Lunch Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
+        data[['Dinner Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
+        data[['Snack Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
+    ]
 
-    def get_fitness(meals):
-        c = sum(m['Calories'] for m in meals)
-        p = sum(m['Protein'] for m in meals)
-        cost = sum(m['Price'] for m in meals)
+    # 1. Initialize Population (Random individuals)
+    pop_size = 50
+    population = [[p.sample(1).iloc[0] for p in pools] for _ in range(pop_size)]
+    
+    history = []
+
+    for gen in range(100):
+        # 2. Evaluation
+        scores = [calculate_fitness(ind, target_c) for ind in population]
+        history.append(min(scores) if min(scores) < 1000000 else 50)
+
+        # 3. Selection (Keep the best half)
+        sorted_indices = np.argsort(scores)
+        population = [population[i] for i in sorted_indices[:pop_size//2]]
+
+        # 4. Mutation (EP only uses mutation, no crossover!)
+        # We take the survivors and create "offspring" by slightly changing them
+        offspring = []
+        for parent in population:
+            child = [m.copy() for m in parent]
+            # Mutate: Randomly pick 1 meal and replace it
+            idx_to_change = np.random.randint(0, 4)
+            child[idx_to_change] = pools[idx_to_change].sample(1).iloc[0]
+            offspring.append(child)
         
-        # --- THE RESET LOGIC ---
-        # If Calories > 3000, the score becomes so huge (1 Million) 
-        # that the computer MUST delete that plan immediately.
-        if c > 3000 or c < 1200:
-            return 1000000, c, p, cost
-            
-        # If it's in the safe range (1200-3000), then we look at Cost and Protein
-        fitness = cost 
-        fitness += abs(c - target_cal) * 2
-        if p < min_prot: fitness += (min_prot - p) * 50
-        
-        return fitness, c, p, cost
+        population.extend(offspring)
 
-    def run_optimizer():
-        pools = [
-            df[['Breakfast Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
-            df[['Lunch Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
-            df[['Dinner Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
-            df[['Snack Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
-        ]
+    # Return the absolute winner
+    winner_scores = [calculate_fitness(ind, target_c) for ind in population]
+    return population[np.argmin(winner_scores)], history
 
-        # Start with a HUGE population to find the rare low-calorie meals
-        pop = [[p.sample(1).iloc[0] for p in pools] for _ in range(200)]
-        
-        history = []
-        for gen in range(100):
-            # Sort: This will move all the 1,000,000 point (over 3000kcal) plans to the bottom
-            pop.sort(key=lambda x: get_fitness(x)[0])
-            history.append(get_fitness(pop[0])[0])
-            
-            # Keep only the ones that stayed under 3000kcal
-            next_gen = pop[:40] 
-            
-            while len(next_gen) < 200:
-                parent = next_gen[np.random.randint(0, len(next_gen))]
-                child = [m.copy() for m in parent]
-                # Randomly change 1 or 2 meals to keep searching
-                for _ in range(np.random.randint(1, 3)):
-                    idx = np.random.randint(0, 4)
-                    child[idx] = pools[idx].sample(1).iloc[0]
-                next_gen.append(child)
-            pop = next_gen
-            
-        return pop[0], history
+# --- 3. UI ---
+st.sidebar.header("Nutrition Targets")
+user_target = st.sidebar.slider("Calories Target", 1200, 3000, 2000)
 
-    if st.button("🚀 EXECUTE OPTIMIZATION"):
-        with st.spinner("Filtering out high-calorie meals..."):
-            best, hist = run_optimizer()
-            _, f_cal, f_prot, f_cost = get_fitness(best)
+if st.button("🚀 Run EP Optimization"):
+    winner, history = run_ep_optimizer(user_target)
+    
+    # Calculate final numbers
+    f_cal = sum(m['Calories'] for m in winner)
+    f_price = sum(m['Price'] for m in winner)
+    f_prot = sum(m['Protein'] for m in winner)
 
-        st.divider()
-        # --- THE RESULTS ---
-        c1, c2, c3 = st.columns(3)
-        c1.metric("DAILY COST", f"RM {f_cost:.2f}")
-        c2.metric("CALORIES", f"{f_cal} kcal")
-        c3.metric("PROTEIN", f"{f_prot}g")
+    st.divider()
+    # Display results
+    c1, c2, c3 = st.columns(3)
+    c1.metric("MINIMIZED COST", f"RM {f_price:.2f}")
+    c2.metric("TOTAL CALORIES", f"{f_cal} kcal")
+    c3.metric("TOTAL PROTEIN", f"{f_prot}g")
 
-        if f_cal > 3000:
-            st.error("Still too high. Your CSV might not have enough small meals. Try a lower Protein target in the sidebar.")
-        else:
-            st.success("SUCCESS! Meal plan is within the 1200-3000 kcal limit.")
+    if f_cal > 3000 or f_cal < 1200:
+        st.error("Algorithm stuck! Click Run again to refresh the population.")
+    else:
+        st.success("Success! EP found a valid plan within RM budget.")
 
-        # Show the foods
-        labels = ["Breakfast", "Lunch", "Dinner", "Snack"]
-        cols = ["Breakfast Suggestion", "Lunch Suggestion", "Dinner Suggestion", "Snack Suggestion"]
-        for i in range(4):
-            st.write(f"**{labels[i]}**: {best[i][cols[i]]} ({best[i]['Calories']} kcal)")
+    st.subheader("📋 Recommended Plan")
+    labels = ["Breakfast", "Lunch", "Dinner", "Snack"]
+    col_name = data.columns[0]
+    for i in range(4):
+        st.write(f"**{labels[i]}:** {winner[i][col_name]} ({winner[i]['Calories']} kcal) - RM {winner[i]['Price']}")
 
-else:
-    st.error("CSV file is missing!")
+    st.line_chart(history)
