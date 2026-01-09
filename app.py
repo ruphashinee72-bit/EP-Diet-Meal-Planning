@@ -5,117 +5,86 @@ import matplotlib.pyplot as plt
 import os
 
 st.set_page_config(page_title="Diet Optimizer RM", layout="wide")
-st.title("🍱 Diet Meal Planning (Strict Constraints)")
+st.title("🍱 Final Diet Optimizer (RM)")
 
-# Load CSV
+# 1. LOAD AND CLEAN DATA (This stops errors)
 if os.path.exists("Food_and_Nutrition__.csv"):
-    data = pd.read_csv("Food_and_Nutrition__.csv")
+    df = pd.read_csv("Food_and_Nutrition__.csv")
+    # This line removes any hidden spaces in your column names!
+    df.columns = df.columns.str.strip() 
+    
+    # Generate prices in RM
+    np.random.seed(42)
+    df['Price'] = (df['Calories'] * 0.005 + np.random.uniform(2, 5, size=len(df))).round(2)
 
-    # Generate synthetic Price in RM if not exists
-    if 'Price' not in data.columns:
-        np.random.seed(42)
-        data['Price'] = (data['Calories'] * 0.005 + np.random.uniform(2, 5, size=len(data))).round(2)
-
-    # --- USER INPUTS ---
+    # 2. TARGETS
     st.subheader("Set Daily Nutrition Targets")
-    col1, col2, col3 = st.columns(3)
-    cal_target = col1.number_input("Target Calories", value=2000, step=50)
-    protein_target = col2.number_input("Protein (g)", value=75)
-    fat_target = col3.number_input("Fat (g)", value=70)
+    c1, c2, c3 = st.columns(3)
+    cal_target = c1.number_input("Target Calories", 1200, 3000, 2000)
+    prot_target = c2.number_input("Target Protein (g)", 10, 300, 75)
+    fat_target = c3.number_input("Target Fat (g)", 10, 200, 70)
 
-    # Pools
-    b_pool = data[['Breakfast Suggestion','Calories','Protein','Fat','Price']].dropna()
-    l_pool = data[['Lunch Suggestion','Calories','Protein','Fat','Price']].dropna()
-    d_pool = data[['Dinner Suggestion','Calories','Protein','Fat','Price']].dropna()
-    s_pool = data[['Snack Suggestion','Calories','Protein','Fat','Price']].dropna()
+    # 3. THE FITNESS BRAIN
+    def get_fitness(meals):
+        t_cal = sum(m['Calories'] for m in meals)
+        t_prot = sum(m['Protein'] for m in meals)
+        t_fat = sum(m['Fat'] for m in meals)
+        t_price = sum(m['Price'] for m in meals)
 
-    # --- FITNESS FUNCTION ---
-    def fitness(plan):
-        total_cal = sum(m['Calories'] for m in plan)
-        total_prot = sum(m['Protein'] for m in plan)
-        total_fat = sum(m['Fat'] for m in plan)
-        total_price = sum(m['Price'] for m in plan)
-
+        # THE HARD RULES:
         penalty = 0
-        # Hard constraints: calories must be reasonable
-        if total_cal < 1200 or total_cal > 3000:
-            penalty += 1000 * abs(total_cal - cal_target)
-        # Soft penalties
-        penalty += abs(total_cal - cal_target) * 5
-        penalty += abs(total_prot - protein_target) * 5
-        penalty += abs(total_fat - fat_target) * 5
+        if t_cal < 1200: penalty += 50000 + (1200 - t_cal) * 100
+        if t_cal > 3000: penalty += 50000 + (t_cal - 3000) * 100
+        
+        # CLOSE TO TARGET RULES:
+        penalty += abs(t_cal - cal_target) * 10
+        penalty += abs(t_prot - prot_target) * 5
+        penalty += abs(t_fat - fat_target) * 5
+        
+        return t_price + penalty, t_cal, t_prot, t_fat, t_price
 
-        # Objective: minimize price + penalty
-        score = total_price + penalty
-        return score
+    # 4. RUN OPTIMIZER
+    if st.button("🚀 RUN OPTIMIZER NOW"):
+        # Create Pools
+        b_p = df[['Breakfast Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
+        l_p = df[['Lunch Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
+        d_p = df[['Dinner Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
+        s_p = df[['Snack Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
 
-    # --- EVOLUTIONARY PROGRAMMING ---
-    def ep_optimizer(pop_size=50, generations=50):
-        # Initialize population
-        population = [
-            [
-                b_pool.sample(n=1).iloc[0],
-                l_pool.sample(n=1).iloc[0],
-                d_pool.sample(n=1).iloc[0],
-                s_pool.sample(n=1).iloc[0]
-            ] for _ in range(pop_size)
-        ]
-
+        # Initial Pop
+        pop = [[b_p.sample(1).iloc[0], l_p.sample(1).iloc[0], 
+                d_p.sample(1).iloc[0], s_p.sample(1).iloc[0]] for _ in range(60)]
+        
         history = []
-        for gen in range(generations):
-            # Evaluate fitness
-            scores = np.array([fitness(ind) for ind in population])
-            history.append(scores.min())
-
-            # Selection: keep top 50%
-            idx_sorted = np.argsort(scores)
-            population = [population[i] for i in idx_sorted[:pop_size//2]]
-
-            # Mutation: change one random meal in each parent
-            children = []
-            for parent in population:
+        for gen in range(100):
+            pop.sort(key=lambda x: get_fitness(x)[0])
+            history.append(get_fitness(pop[0])[0])
+            
+            # Keep best, Mutate others
+            new_pop = pop[:30]
+            while len(new_pop) < 60:
+                parent = pop[np.random.randint(0, 30)]
                 child = list(parent)
                 idx = np.random.randint(0, 4)
-                pools = [b_pool, l_pool, d_pool, s_pool]
-                child[idx] = pools[idx].sample(n=1).iloc[0]
-                children.append(child)
+                child[idx] = [b_p, l_p, d_p, s_p][idx].sample(1).iloc[0]
+                new_pop.append(child)
+            pop = new_pop
+        
+        winner = pop[0]
+        _, f_cal, f_prot, f_fat, f_price = get_fitness(winner)
 
-            population.extend(children)
+        # 5. RESULTS
+        st.divider()
+        res1, res2, res3, res4 = st.columns(4)
+        res1.metric("TOTAL COST", f"RM {f_price:.2f}")
+        res2.metric("CALORIES", f"{f_cal} kcal")
+        res3.metric("PROTEIN", f"{f_prot}g")
+        res4.metric("FAT", f"{f_fat}g")
 
-        # Return best individual and history
-        final_scores = np.array([fitness(ind) for ind in population])
-        best_idx = np.argmin(final_scores)
-        return population[best_idx], history
-
-    # --- RUN EP ON BUTTON CLICK ---
-    if st.button("🚀 Find My Optimized Meal Plan"):
-        best_plan, history = ep_optimizer(pop_size=80, generations=100)
-        total_cal = sum(m['Calories'] for m in best_plan)
-        total_prot = sum(m['Protein'] for m in best_plan)
-        total_fat = sum(m['Fat'] for m in best_plan)
-        total_price = sum(m['Price'] for m in best_plan)
-
-        st.subheader("Optimized Daily Result (RM)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Daily Cost", f"RM {total_price:.2f}")
-        c2.metric("Total Calories", f"{total_cal} kcal")
-        c3.metric("Total Protein", f"{total_prot} g")
-        c4.metric("Total Fat", f"{total_fat} g")
-
-        st.write("### 📋 Recommended Menu")
-        labels = ["Breakfast", "Lunch", "Dinner", "Snack"]
+        st.subheader("🍴 Recommended Menu")
+        names = ["Breakfast", "Lunch", "Dinner", "Snack"]
         cols = ["Breakfast Suggestion", "Lunch Suggestion", "Dinner Suggestion", "Snack Suggestion"]
         for i in range(4):
-            st.success(f"**{labels[i]}:** {best_plan[i][cols[i]]} "
-                       f"({best_plan[i]['Calories']} kcal, {best_plan[i]['Protein']}g protein) - RM {best_plan[i]['Price']:.2f}")
-
-        # --- Convergence Chart ---
-        st.subheader("Convergence over Generations")
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(history, color='purple')
-        ax.set_xlabel("Generation")
-        ax.set_ylabel("Fitness (Lower is Better)")
-        st.pyplot(fig)
-
-else:
-    st.error("Please ensure 'Food_and_Nutrition__.csv' is in the folder.")
+            st.success(f"**{names[i]}:** {winner[i][cols[i]]} ({winner[i]['Calories']} kcal) - RM {winner[i]['Price']}")
+            
+        st.line_chart(history)
