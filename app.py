@@ -4,111 +4,112 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-st.set_page_config(page_title="Evolutionary Diet Optimizer", layout="wide")
-st.title("🥗 Evolutionary Diet Optimizer (RM)")
-st.write("Objective: Minimize Total Cost while strictly satisfying 1200-3000 kcal constraints.")
+st.set_page_config(page_title="Diet Optimizer RM", layout="wide")
+st.title("🥗 Final Diet Optimizer: Strict Constraint Mode")
 
-# --- 1. LOAD & CLEAN DATA ---
 if os.path.exists("Food_and_Nutrition__.csv"):
     df = pd.read_csv("Food_and_Nutrition__.csv")
     df.columns = df.columns.str.strip() 
     
-    # Generate Synthetic Price in RM
+    # Prices in RM
     np.random.seed(42)
     df['Price'] = (df['Calories'] * 0.005 + np.random.uniform(2, 5, size=len(df))).round(2)
 
-    # --- 2. USER INPUTS ---
-    st.sidebar.header("Nutrition Constraints")
-    cal_target = st.sidebar.slider("Calorie Goal", 1200, 3000, 2000)
-    prot_min = st.sidebar.number_input("Min Protein (g)", value=50)
-    fat_min = st.sidebar.number_input("Min Fat (g)", value=40)
+    # --- SIDEBAR TARGETS ---
+    st.sidebar.header("Step 1: Set Constraints")
+    cal_max = 3000
+    cal_min = 1200
+    target_cal = st.sidebar.slider("Target Calories", cal_min, cal_max, 2000)
+    min_prot = st.sidebar.number_input("Min Protein (g)", 50)
 
-    # --- 3. THE EVOLUTIONARY ENGINE ---
-    def fitness_function(meals):
-        t_cal = sum(m['Calories'] for m in meals)
-        t_prot = sum(m['Protein'] for m in meals)
-        t_fat = sum(m['Fat'] for m in meals)
-        t_price = sum(m['Price'] for m in meals)
-
-        # Base score is the Cost (Minimize this!)
-        score = t_price 
-
-        # EXTREME PENALTY for exceeding 3000 or falling below 1200
-        if t_cal > 3000:
-            score += (t_cal - 3000) * 100 + 5000  # Massive penalty for overeating
-        if t_cal < 1200:
-            score += (1200 - t_cal) * 100 + 5000  # Massive penalty for undereating
+    # --- THE ENGINE ---
+    def get_stats(meals):
+        c = sum(m['Calories'] for m in meals)
+        p = sum(m['Protein'] for m in meals)
+        f = sum(m['Fat'] for m in meals)
+        cost = sum(m['Price'] for m in meals)
         
-        # Soft constraints
-        score += abs(t_cal - cal_target) * 10
-        if t_prot < prot_min: score += (prot_min - t_prot) * 50
-        if t_fat < fat_min: score += (fat_min - t_fat) * 50
+        # PENALTY LOGIC
+        # If outside 1200-3000, penalty is massive
+        penalty = 0
+        if c > cal_max: penalty += (c - cal_max) * 500 + 10000
+        if c < cal_min: penalty += (cal_min - c) * 500 + 10000
         
-        return score, t_cal, t_prot, t_fat, t_price
+        # Soft penalty for missing the specific target
+        penalty += abs(c - target_cal) * 20
+        if p < min_prot: penalty += (min_prot - p) * 100
+        
+        return cost + penalty, c, p, f, cost
 
-    def run_evolution():
-        # Pools
-        b_pool = df[['Breakfast Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
-        l_pool = df[['Lunch Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
-        d_pool = df[['Dinner Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
-        s_pool = df[['Snack Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
+    def evolve():
+        # Create pools
+        pools = [
+            df[['Breakfast Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
+            df[['Lunch Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
+            df[['Dinner Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna(),
+            df[['Snack Suggestion', 'Calories', 'Protein', 'Fat', 'Price']].dropna()
+        ]
 
-        # Initialize: Start with random meals
-        pop = [[b_pool.sample(1).iloc[0], l_pool.sample(1).iloc[0], 
-                d_pool.sample(1).iloc[0], s_pool.sample(1).iloc[0]] for _ in range(100)]
+        pop_size = 100
+        # Initialize with totally random individuals
+        pop = [[p.sample(1).iloc[0] for p in pools] for _ in range(pop_size)]
         
         history = []
-        for gen in range(150):
-            # Sort by fitness score (Lower is better)
-            pop.sort(key=lambda x: fitness_function(x)[0])
-            history.append(fitness_function(pop[0])[0])
+        for gen in range(200): # More generations to search harder
+            # Evaluate all
+            evals = [get_stats(ind) for ind in pop]
+            fitness_scores = [e[0] for e in evals]
+            history.append(min(fitness_scores))
             
-            # Elitism: Keep top 20
-            next_gen = pop[:20]
-            
-            # Mutation & Crossover
-            while len(next_gen) < 100:
-                parent = next_gen[np.random.randint(0, len(next_gen))]
-                child = list(parent)
+            # Selection: Tournament (Pick 3, keep the best)
+            new_pop = []
+            for _ in range(pop_size // 2):
+                participants = np.random.choice(len(pop), 3, replace=False)
+                best_idx = participants[np.argmin([fitness_scores[i] for i in participants])]
+                new_pop.append(list(pop[best_idx]))
+
+            # Reproduction with High Mutation
+            while len(new_pop) < pop_size:
+                parent = new_pop[np.random.randint(0, len(new_pop))]
+                child = [m.copy() for m in parent]
                 
-                # High Mutation: 40% chance to change a meal completely
-                if np.random.rand() < 0.4:
-                    idx = np.random.randint(0, 4)
-                    child[idx] = [b_pool, l_pool, d_pool, s_pool][idx].sample(1).iloc[0]
-                next_gen.append(child)
-            pop = next_gen
+                # High Mutation: 50% chance to swap a meal
+                if np.random.rand() < 0.5:
+                    m_idx = np.random.randint(0, 4)
+                    child[m_idx] = pools[m_idx].sample(1).iloc[0]
+                new_pop.append(child)
             
-        return pop[0], history
+            pop = new_pop
+            
+        # Final winner
+        winner_evals = [get_stats(ind) for ind in pop]
+        winner_idx = np.argmin([e[0] for e in winner_evals])
+        return pop[winner_idx], history
 
-    # --- 4. EXECUTION ---
-    if st.button("🚀 Run Optimizer"):
-        winner, history = run_evolution()
-        _, f_cal, f_prot, f_fat, f_price = fitness_function(winner)
+    if st.button("🚀 RUN OPTIMIZATION"):
+        with st.spinner("AI is searching for low-cost, low-calorie meals..."):
+            winner, history = evolve()
+            fit, final_cal, final_prot, final_fat, final_cost = get_stats(winner)
 
-        # DISPLAY
+        # --- RESULTS ---
         st.divider()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("MINIMIZED COST", f"RM {f_price:.2f}")
-        c2.metric("TOTAL CALORIES", f"{f_cal} kcal", delta=f"{f_cal - cal_target} from target")
-        c3.metric("TOTAL PROTEIN", f"{f_prot}g")
-        c4.metric("TOTAL FAT", f"{f_fat}g")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("TOTAL COST", f"RM {final_cost:.2f}")
+        col2.metric("CALORIES", f"{final_cal} kcal")
+        col3.metric("PROTEIN", f"{final_prot}g")
+        col4.metric("FAT", f"{final_fat}g")
 
-        if f_cal > 3000 or f_cal < 1200:
-            st.error("Constraint Violation! Total calories are outside the 1200-3000 range. Please Run again.")
+        if final_cal > 3000:
+            st.error("🚨 Constraints Failed: Still too high. Try clicking Run again to restart the search.")
         else:
-            st.success("Successfully found a plan within constraints!")
+            st.success("✅ Constraints Satisfied: Found a meal plan under 3000 kcal!")
 
-        st.subheader("📋 Recommended Meal Plan")
+        st.subheader("📋 Your Optimized Daily Menu")
         labels = ["Breakfast", "Lunch", "Dinner", "Snack"]
         cols = ["Breakfast Suggestion", "Lunch Suggestion", "Dinner Suggestion", "Snack Suggestion"]
         for i in range(4):
-            st.info(f"**{labels[i]}:** {winner[i][cols[i]]} | {winner[i]['Calories']} kcal | RM {winner[i]['Price']}")
+            st.info(f"**{labels[i]}**: {winner[i][cols[i]]} ({winner[i]['Calories']} kcal) - RM {winner[i]['Price']}")
 
-        st.subheader("📈 Optimization Progress")
-        
-        fig, ax = plt.subplots(figsize=(10, 3))
-        ax.plot(history, color='navy')
-        ax.set_ylabel("Penalty + Cost")
-        st.pyplot(fig)
+        st.line_chart(history)
 else:
-    st.error("CSV not found.")
+    st.error("CSV File not found.")
